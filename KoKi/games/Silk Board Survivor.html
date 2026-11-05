@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Silk Board Survivor</title>
+<meta name="description" content="One-thumb Bengaluru traffic dodger. One life. Beat my score.">
+<meta property="og:title" content="Silk Board Survivor">
+<meta property="og:description" content="Can you survive Bengaluru traffic? One thumb. One life.">
+<meta property="og:type" content="website">
+<link href="https://fonts.googleapis.com/css2?family=Bungee&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#1d1f24;--paint:#f6e7b4;--yellow:#ffc21a;--yellow-d:#b38600;--green:#1f9d55;--red:#e5484d;--glass:rgba(20,22,28,.82)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--ink);overscroll-behavior:none;touch-action:none;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:var(--paint)}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+.disp{font-family:"Bungee",Impact,sans-serif}
+#hud{position:fixed;left:0;right:0;top:calc(env(safe-area-inset-top,0px) + 8px);text-align:center;pointer-events:none}
+#score{font-size:44px;line-height:1;text-shadow:0 3px 0 rgba(0,0,0,.45)}
+#sub{font-size:13px;opacity:.9;margin-top:4px}
+#chip{font-size:14px;min-height:18px;margin-top:6px;color:var(--yellow)}
+#mute{position:fixed;right:12px;top:calc(env(safe-area-inset-top,0px) + 10px);width:42px;height:42px;border-radius:50%;border:0;background:var(--glass);color:var(--paint);font-size:20px;z-index:5}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:calc(env(safe-area-inset-top,0px) + 20px) 24px calc(env(safe-area-inset-bottom,0px) + 20px);background:var(--glass);text-align:center;z-index:4}
+.ov.hide{display:none}
+h1{font-family:"Bungee",Impact,sans-serif;font-size:clamp(38px,12vw,64px);line-height:.95;margin:0;color:var(--yellow);text-shadow:0 4px 0 #000}
+h2{font-family:"Bungee",Impact,sans-serif;font-size:clamp(22px,6.5vw,32px);margin:0;max-width:20ch;line-height:1.15}
+p{margin:0;max-width:34ch;line-height:1.4}
+.big{font-family:"Bungee",Impact,sans-serif;font-size:18px;padding:14px 28px;border:0;border-radius:14px;background:var(--yellow);color:var(--ink);box-shadow:0 5px 0 var(--yellow-d);min-width:220px}
+.big:active{transform:translateY(4px);box-shadow:0 1px 0 var(--yellow-d)}
+.big.alt{background:var(--paint);box-shadow:0 5px 0 #a89a68}
+.tog{display:flex;border-radius:12px;overflow:hidden;border:2px solid var(--paint)}
+.tog button{font-family:"Bungee",Impact,sans-serif;font-size:14px;padding:10px 18px;border:0;background:transparent;color:var(--paint)}
+.tog button.on{background:var(--paint);color:var(--ink)}
+#fscore{font-family:"Bungee",Impact,sans-serif;font-size:64px;line-height:1;color:var(--yellow)}
+#frank{font-family:"Bungee",Impact,sans-serif;font-size:18px}
+#toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 24px);transform:translateX(-50%);background:var(--paint);color:var(--ink);padding:10px 16px;border-radius:10px;font-size:14px;z-index:9;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><div id="score" class="disp">0</div><div id="sub"></div><div id="chip"></div></div>
+<button id="mute" aria-label="Mute">🔊</button>
+
+<div id="start" class="ov">
+  <h1>Silk Board<br>Survivor</h1>
+  <p id="beatMsg"></p>
+  <div class="tog"><button id="mEnd" class="on">Endless</button><button id="mDay">Daily</button></div>
+  <p>Tap the left or right side of the screen to change lanes. One hit and you're done.</p>
+  <button id="go" class="big">Start driving</button>
+  <p id="bestLine"></p>
+</div>
+
+<div id="over" class="ov hide">
+  <h2 id="crashMsg"></h2>
+  <div id="fscore">0</div>
+  <div id="frank"></div>
+  <p id="fdetail"></p>
+  <button id="share" class="big">Share result</button>
+  <button id="again" class="big alt">Try again</button>
+</div>
+<div id="toast"></div>
+
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const cv = $('c'), ctx = cv.getContext('2d');
+let W, H, DPR, roadW, roadX, laneW;
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  roadW = Math.min(W, 480); roadX = (W - roadW) / 2; laneW = roadW / 3;
+}
+addEventListener('resize', resize); addEventListener('orientationchange', resize); resize();
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+
+// ---------- storage (always guarded) ----------
+const st = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+};
+const today = new Date().toISOString().slice(0, 10);
+const seedOf = s => [...s].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619), 2166136261);
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const beat = +new URLSearchParams(location.search).get('beat') || 0;
+let mode = 'endless', rnd = Math.random;
+
+// ---------- audio (Web Audio, no files) ----------
+let ac, muted = st.get('sb_mute', false);
+function tone(f, d, type = 'square', v = .08, slide = 0) {
+  if (muted) return;
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime;
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, f + slide), t + d);
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(.001, t + d);
+    o.connect(g); g.connect(ac.destination); o.start(); o.stop(t + d);
+  } catch (e) {}
+}
+const sfx = {
+  horn() { tone(420, .2, 'sawtooth', .06); tone(530, .2, 'sawtooth', .05); },
+  chai() { tone(660, .1, 'triangle', .1); setTimeout(() => tone(990, .14, 'triangle', .1), 90); },
+  crash() { tone(170, .55, 'sawtooth', .15, -130); tone(90, .6, 'square', .1, -50); },
+  near() { tone(880, .07, 'square', .05); }
+};
+const buzz = p => { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} };
+function setMute() { $('mute').textContent = muted ? '🔇' : '🔊'; }
+$('mute').onclick = () => { muted = !muted; st.set('sb_mute', muted); setMute(); };
+setMute();
+
+// ---------- game data ----------
+const TYPES = [
+  { k: 'auto', w: .62, h: .95, rel: .7 }, { k: 'car', w: .66, h: 1.05, rel: .7 },
+  { k: 'pot', w: .6, h: .5, rel: 1 }, { k: 'bike', w: .3, h: .7, rel: .85 },
+  { k: 'cow', w: .55, h: .85, rel: 1 }, { k: 'bus', w: .8, h: 2, rel: .55 },
+  { k: 'brake', w: .66, h: 1.05, rel: .6 }
+];
+const UNLOCK = { auto: 0, car: 0, pot: 5, bike: 12, cow: 18, bus: 25, brake: 32 };
+const MSGS = ['Google Maps said 5 mins 😭', 'You tried to overtake an auto 💀', 'Welcome to Silk Board', 'The cow had right of way 🐄',
+  'Pothole 1, You 0', 'Should have taken the metro 🚇', '"Almost there" – you, 2 km ago', 'Bhai, indicator daalo!'];
+const RANKS = [[0, 'Learner'], [300, 'Office-Goer'], [800, 'Cab Driver'], [1500, 'Silk Board Legend']];
+const rankOf = s => RANKS.reduce((r, x) => s >= x[0] ? x[1] : r, 'Learner');
+const SKY = [[0, [255, 255, 255, 0]], [.3, [255, 130, 50, .22]], [.6, [15, 20, 70, .5]], [.85, [15, 20, 70, .5]], [1, [255, 255, 255, 0]]];
+function tint(t) {
+  const p = (t % 120) / 120; let i = 0; while (i < SKY.length - 2 && p > SKY[i + 1][0]) i++;
+  const a = SKY[i], b = SKY[i + 1], f = (p - a[0]) / (b[0] - a[0]);
+  const c = a[1].map((v, j) => v + (b[1][j] - v) * f);
+  return `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${c[3]})`;
+}
+
+// ---------- state ----------
+let S, paused = false;
+function reset() {
+  rnd = mode === 'daily' ? mulberry(seedOf(today)) : Math.random;
+  S = { state: 'play', t: 0, scroll: 0, score: 0, lane: 1, x: 1.5, lastSwitch: -9, obs: [], items: [], parts: [], pops: [],
+    spawnAcc: 0, combo: 0, comboT: 0, boost: 0, shield: 0, shake: 0, crashT: 0, rain: 0, rainNext: 15 + rnd() * 10, v: 0, msg: '' };
+}
+reset(); S.state = 'idle';
+
+function steer(d) {
+  if (!S || S.state !== 'play') return;
+  const n = Math.max(0, Math.min(2, S.lane + d));
+  if (n !== S.lane) { S.lane = n; S.lastSwitch = S.t; }
+}
+cv.addEventListener('pointerdown', e => { if (paused) { paused = false; return; } steer(e.clientX < W / 2 ? -1 : 1); });
+addEventListener('keydown', e => {
+  const k = e.key;
+  if (k === 'ArrowLeft' || k === 'a' || k === 'A') steer(-1);
+  else if (k === 'ArrowRight' || k === 'd' || k === 'D') steer(1);
+  else if (k === 'Enter' || k === ' ') {
+    if (!$('start').classList.contains('hide')) $('go').click();
+    else if (!$('over').classList.contains('hide')) $('again').click();
+    else if (paused) paused = false;
+  }
+});
+const pause = () => { if (S && S.state === 'play') paused = true; };
+document.addEventListener('visibilitychange', () => document.hidden && pause());
+addEventListener('blur', pause);
+
+function spawnRow() {
+  const n = (S.t > 20 && rnd() < .35) ? 2 : 1; // never block all three lanes
+  const lanes = [0, 1, 2].sort(() => rnd() - .5).slice(0, n);
+  const pool = TYPES.filter(t => S.t >= UNLOCK[t.k]);
+  lanes.forEach(l => {
+    const T = pool[(rnd() * pool.length) | 0];
+    S.obs.push({ T, l, x: l + .5, y: -T.h * laneW, ph: rnd() * 6, passed: false, b: 0, dead: false });
+  });
+  if (rnd() < .2) S.items.push({ k: rnd() < .3 ? 'metro' : 'chai', x: ((rnd() * 3) | 0) + .5, y: -laneW * 3.2 });
+}
+function burst(x, y, c, n) {
+  for (let i = 0; i < n; i++) { const a = Math.random() * 6.28, s = 80 + Math.random() * 260;
+    S.parts.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: .5 + Math.random() * .4, c }); }
+}
+const pop = (txt, c, x, y) => S.pops.push({ txt, c, x, y, life: 1 });
+
+function fx(dt) {
+  S.parts.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt; });
+  S.parts = S.parts.filter(p => p.life > 0);
+  S.pops.forEach(p => { p.y -= 50 * dt; p.life -= dt; });
+  S.pops = S.pops.filter(p => p.life > 0);
+  S.shake = Math.max(0, S.shake - dt * 2.5);
+}
+
+function update(dt) {
+  const s = S, py = H * .78, ph = laneW;
+  if (s.state === 'idle') { s.scroll += H * .3 * dt; return; }
+  fx(dt);
+  if (s.state === 'over') return;
+  if (s.state === 'crash') { s.crashT += dt; if (s.crashT > .9) gameOver(); return; }
+  s.t += dt;
+  const v = s.v = H * (.5 + .8 * Math.min(1, s.t / 80)) * (s.boost > 0 ? 1.25 : 1);
+  s.scroll += v * dt;
+  s.boost = Math.max(0, s.boost - dt); s.shield = Math.max(0, s.shield - dt);
+  s.comboT -= dt; if (s.comboT <= 0) s.combo = 0;
+  s.score += v * dt / H * 10 * (s.boost > 0 ? 2 : 1);
+  s.x += (s.lane + .5 - s.x) * Math.min(1, dt * 16);
+  s.spawnAcc += dt;
+  const iv = 1.15 - .55 * Math.min(1, s.t / 70);
+  if (s.spawnAcc >= iv) { s.spawnAcc = 0; spawnRow(); }
+  if (s.rain > 0) s.rain -= dt; else { s.rainNext -= dt; if (s.rainNext <= 0) { s.rain = 8; s.rainNext = 22 + rnd() * 12; } }
+  const px = roadX + s.x * laneW;
+  for (const o of s.obs) {
+    const T = o.T; let rel = T.rel;
+    if (T.k === 'brake' && o.y > H * .2) { if (!o.b) { o.b = 1; sfx.horn(); } rel = 1.25; }
+    if (T.k === 'bike') o.x = o.l + .5 + Math.sin(s.t * 2.2 + o.ph) * .38;
+    o.y += v * rel * dt;
+    if (o.dead) continue;
+    const dx = Math.abs(o.x - s.x) * laneW, dy = Math.abs(o.y - py);
+    const hw = (T.w + .6) / 2 * laneW * .78, hh = (T.h * laneW + ph) / 2 * .82;
+    if (dx < hw && dy < hh) {
+      if (s.shield > 0) { o.dead = true; s.score += 50; pop('SMASHED! +50', '#7dffb0', px, py - 60); burst(roadX + o.x * laneW, o.y, '#7dffb0', 14); buzz(30); }
+      else { crash(o); return; }
+    } else if (!o.passed && o.y > py) {
+      o.passed = true;
+      if (dx < laneW * 1.1 && s.t - s.lastSwitch < .6) {
+        s.combo++; const b = 25 * Math.min(s.combo, 5); s.score += b;
+        s.comboT = 2.5; s.shake = .35; sfx.near(); buzz(15);
+        pop(`CLOSE! x${s.combo} +${b}`, '#ffc21a', px, py - 70);
+      }
+    }
+  }
+  s.obs = s.obs.filter(o => o.y < H + laneW * 3 && !(o.dead && o.y > H));
+  for (const it of s.items) {
+    it.y += v * dt;
+    if (!it.got && Math.abs(it.x - s.x) * laneW < laneW * .5 && Math.abs(it.y - py) < laneW * .8) {
+      it.got = true; sfx.chai(); buzz(20);
+      if (it.k === 'chai') { s.boost = 3; pop('CHAI BOOST x2 ☕', '#ffd9a0', px, py - 60); }
+      else { s.shield = 5; pop('METRO PASS 🚇', '#7dd3ff', px, py - 60); }
+      burst(px, py, '#fff', 12);
+    }
+  }
+  s.items = s.items.filter(i => !i.got && i.y < H + 100);
+}
+
+function crash(o) {
+  const s = S; s.state = 'crash'; s.shake = 1; sfx.crash(); buzz([80, 40, 120]);
+  s.msg = MSGS[(Math.random() * MSGS.length) | 0];
+  burst(roadX + s.x * laneW, H * .78, '#ffb347', 30); burst(roadX + s.x * laneW, H * .78, '#fff', 14);
+}
+
+function gameOver() {
+  const s = S; s.state = 'over';
+  const sc = Math.floor(s.score), km = (s.scroll / H * .05).toFixed(1);
+  const key = mode === 'daily' ? 'sb_dbest_' + today : 'sb_best';
+  let best = st.get(key, 0); const nb = sc > best; if (nb) { best = sc; st.set(key, best); }
+  let streak = '';
+  if (mode === 'daily') {
+    const sk = st.get('sb_streak', { d: '', n: 0 });
+    if (sk.d !== today) { const y = new Date(Date.now() - 864e5).toISOString().slice(0, 10); sk.n = sk.d === y ? sk.n + 1 : 1; sk.d = today; st.set('sb_streak', sk); }
+    streak = ` Daily streak: ${sk.n} 🔥`;
+  }
+  s.res = { sc, km, best, rank: rankOf(sc) };
+  $('crashMsg').textContent = s.msg; $('fscore').textContent = sc; $('frank').textContent = s.res.rank;
+  let d = `${km} km survived. ${nb ? 'New best! 🎉' : 'Best: ' + best}.${streak}`;
+  if (beat) d += sc > beat ? ` You beat your friend's ${beat}!` : ` Your friend's ${beat} still stands.`;
+  $('fdetail').textContent = d;
+  $('over').classList.remove('hide'); $('score').textContent = ''; $('sub').textContent = ''; $('chip').textContent = '';
+}
+
+// ---------- drawing ----------
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+function el(x, y, rx, ry, c) { ctx.fillStyle = c; ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, 7); ctx.fill(); }
+function lights(w, h, on) { ctx.fillStyle = on ? '#ff3b3b' : '#8a1c1c'; ctx.fillRect(-w * .42, h * .38, w * .2, h * .08); ctx.fillRect(w * .22, h * .38, w * .2, h * .08); }
+function veh(k, cx, cy, w, h, o) {
+  ctx.save(); ctx.translate(cx, cy);
+  if (k === 'pot') { el(0, 0, w / 2, h / 2, '#15161a'); ctx.strokeStyle = '#6b6f78'; ctx.lineWidth = 3; ctx.stroke(); ctx.restore(); return; }
+  ctx.fillStyle = 'rgba(0,0,0,.28)'; rr(-w / 2 + 3, -h / 2 + 5, w, h, w * .22); ctx.fill();
+  if (k === 'cow') {
+    ctx.fillStyle = '#f4f1ea'; rr(-w * .42, -h / 2, w * .84, h * .72, w * .3); ctx.fill();
+    el(-w * .15, -h * .22, w * .16, h * .12, '#6b4a32'); el(w * .18, -h * .04, w * .12, h * .09, '#6b4a32');
+    el(0, h * .32, w * .24, w * .22, '#f4f1ea'); ctx.fillStyle = '#222'; ctx.fillRect(-w * .12, h * .35, w * .06, w * .06); ctx.fillRect(w * .06, h * .35, w * .06, w * .06);
+  } else if (k === 'bike') {
+    ctx.fillStyle = '#2a6fdb'; rr(-w * .22, -h / 2, w * .44, h, w * .2); ctx.fill();
+    el(0, -h * .05, w * .45, w * .3, '#ffb27a'); el(0, -h * .12, w * .3, w * .3, '#e5484d');
+    ctx.fillStyle = '#111'; ctx.fillRect(-w * .6, -h * .32, w * 1.2, 3);
+  } else {
+    const body = { auto: '#ffc21a', bus: '#d9482b', car: '#8e5ad7', brake: '#e8e8ea', me: '#17c3b2' }[k];
+    ctx.fillStyle = body; rr(-w / 2, -h / 2, w, h, w * .2); ctx.fill();
+    if (k === 'auto') { ctx.fillStyle = '#16171b'; rr(-w * .4, -h * .42, w * .8, h * .38, w * .12); ctx.fill(); ctx.fillStyle = '#1f9d55'; ctx.fillRect(-w / 2, h * .08, w, h * .16); lights(w, h, 0); }
+    else if (k === 'bus') { ctx.fillStyle = '#9fd8ff'; for (let i = 0; i < 5; i++) ctx.fillRect(-w * .38, -h * .44 + i * h * .17, w * .76, h * .1); ctx.fillStyle = '#fff'; ctx.fillRect(-w / 2, h * .38, w, h * .04); lights(w, h, 0); }
+    else if (k === 'me') { ctx.fillStyle = '#0e2b2a'; rr(-w * .38, -h * .3, w * .76, h * .24, w * .1); ctx.fill(); ctx.fillStyle = '#fff'; ctx.fillRect(-w * .06, -h / 2, w * .12, h); lights(w, h, 1); }
+    else { ctx.fillStyle = '#20222a'; rr(-w * .36, -h * .26, w * .72, h * .26, w * .1); ctx.fill(); lights(w, h, k === 'brake' && o && o.b && (performance.now() % 300 < 150)); }
+  }
+  ctx.restore();
+}
+
+function draw() {
+  const s = S, py = H * .78; if (!s) return;
+  ctx.save();
+  if (s.shake > 0) ctx.translate((Math.random() - .5) * s.shake * 14, (Math.random() - .5) * s.shake * 14);
+  ctx.fillStyle = '#3b5a47'; ctx.fillRect(-20, -20, W + 40, H + 40);
+  if (roadX > 30) { // roadside scenery with parallax
+    const sp = s.scroll * .9, base = Math.floor(sp / 260);
+    for (let k = -1; k < H / 260 + 2; k++) {
+      const wi = k - base * 0 + base, y = k * 260 + (sp % 260), h = ((wi * 7) & 3);
+      for (const side of [-1, 1]) {
+        const x = side < 0 ? roadX - 40 : roadX + roadW + 40;
+        if ((h + (side > 0 ? 1 : 0)) % 3 === 0) { ctx.fillStyle = '#7b8190'; rr(x - 28, y - 40, 56, 80, 6); ctx.fill(); ctx.fillStyle = '#ffe9a0'; for (let a = 0; a < 3; a++) for (let b = 0; b < 4; b++) ctx.fillRect(x - 20 + a * 15, y - 32 + b * 18, 8, 9); }
+        else { el(x, y, 20, 20, '#2c7a4b'); el(x - 4, y - 4, 10, 10, '#3e9a62'); }
+      }
+    }
+  }
+  ctx.fillStyle = '#34363d'; ctx.fillRect(roadX, -20, roadW, H + 40);
+  ctx.fillStyle = '#f6e7b4'; ctx.fillRect(roadX, -20, 4, H + 40); ctx.fillRect(roadX + roadW - 4, -20, 4, H + 40);
+  const dl = laneW * .8, off = s.scroll % (dl * 2);
+  for (let i = 1; i < 3; i++) for (let y = -dl * 2 + off; y < H; y += dl * 2) ctx.fillRect(roadX + i * laneW - 2, y, 4, dl);
+  for (const it of s.items) { const x = roadX + it.x * laneW; el(x, it.y, laneW * .3, laneW * .3, it.k === 'chai' ? '#c98a3f' : '#2a8dd6'); ctx.font = `${laneW * .36}px serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff'; ctx.fillText(it.k === 'chai' ? '☕' : '🚇', x, it.y + 1); }
+  for (const o of s.obs) { if (o.dead) ctx.globalAlpha = .35; veh(o.T.k, roadX + o.x * laneW, o.y, o.T.w * laneW, o.T.h * laneW, o); ctx.globalAlpha = 1; }
+  if (s.state !== 'idle' && !(s.state === 'over')) {
+    const px = roadX + s.x * laneW; ctx.save(); ctx.translate(px, py); ctx.rotate((s.lane + .5 - s.x) * .35);
+    if (s.shield > 0) { ctx.strokeStyle = `rgba(125,211,255,${.5 + .3 * Math.sin(s.t * 12)})`; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(0, 0, laneW * .8, 0, 7); ctx.stroke(); }
+    if (s.boost > 0) el(0, laneW * .62, laneW * .15, laneW * .28, '#ff9a1f');
+    veh('me', 0, 0, laneW * .6, laneW, null); ctx.restore();
+  }
+  for (const p of s.parts) { ctx.globalAlpha = Math.max(0, p.life * 1.5); ctx.fillStyle = p.c; ctx.fillRect(p.x - 3, p.y - 3, 6, 6); } ctx.globalAlpha = 1;
+  ctx.fillStyle = tint(s.t); ctx.fillRect(-20, -20, W + 40, H + 40);
+  if (s.rain > 0) {
+    const a = Math.min(1, s.rain, 8 - s.rain); ctx.fillStyle = `rgba(20,30,60,${.28 * a})`; ctx.fillRect(-20, -20, W + 40, H + 40);
+    ctx.strokeStyle = `rgba(200,220,255,${.5 * a})`; ctx.lineWidth = 1.5; ctx.beginPath();
+    for (let i = 0; i < 70; i++) { const x = (i * 97 + s.scroll * .1) % W, y = (i * 53 + performance.now() * .9) % H; ctx.moveTo(x, y); ctx.lineTo(x - 4, y + 16); } ctx.stroke();
+  }
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.font = '20px Bungee, Impact, sans-serif';
+  for (const p of s.pops) { ctx.globalAlpha = Math.min(1, p.life * 2); ctx.fillStyle = '#000'; ctx.fillText(p.txt, p.x + 2, p.y + 2); ctx.fillStyle = p.c; ctx.fillText(p.txt, p.x, p.y); } ctx.globalAlpha = 1;
+  ctx.restore();
+  if (paused) { ctx.fillStyle = 'rgba(0,0,0,.6)'; ctx.fillRect(0, 0, W, H); ctx.fillStyle = '#f6e7b4'; ctx.textAlign = 'center'; ctx.font = '28px Bungee, Impact, sans-serif'; ctx.fillText('Paused. Tap to resume', W / 2, H / 2); }
+  if (s.state === 'play' || s.state === 'crash') {
+    $('score').textContent = Math.floor(s.score); $('sub').textContent = (s.scroll / H * .05).toFixed(1) + ' km' + (s.combo > 1 ? '  ·  combo x' + s.combo : '');
+    $('chip').textContent = s.shield > 0 ? '🚇 Metro pass ' + Math.ceil(s.shield) + 's' : s.boost > 0 ? '☕ Chai boost' : '';
+  }
+}
+
+let last = performance.now();
+function loop(n) {
+  const dt = Math.min(.05, (n - last) / 1000); last = n;
+  if (!paused) update(dt);
+  draw(); requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---------- UI ----------
+function refreshStart() {
+  const best = mode === 'daily' ? st.get('sb_dbest_' + today, 0) : st.get('sb_best', 0), sk = st.get('sb_streak', { n: 0 });
+  $('bestLine').textContent = (best ? 'Best: ' + best : '') + (mode === 'daily' && sk.n ? '  ·  Streak: ' + sk.n + ' 🔥' : '');
+  $('mEnd').classList.toggle('on', mode === 'endless'); $('mDay').classList.toggle('on', mode === 'daily');
+}
+$('mEnd').onclick = () => { mode = 'endless'; refreshStart(); };
+$('mDay').onclick = () => { mode = 'daily'; refreshStart(); };
+if (beat) $('beatMsg').textContent = `Your friend scored ${beat}. Can you beat it?`;
+refreshStart();
+function startRun() { $('start').classList.add('hide'); $('over').classList.add('hide'); reset(); tone(1, .01, 'sine', .001); }
+$('go').onclick = startRun; $('again').onclick = startRun;
+
+function toast(t) { const e = $('toast'); e.textContent = t; e.classList.add('show'); setTimeout(() => e.classList.remove('show'), 2400); }
+function card(r) {
+  const c = document.createElement('canvas'); c.width = c.height = 600; const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, 0, 0, 600); g.addColorStop(0, '#ff9a3c'); g.addColorStop(1, '#2b2d4a'); x.fillStyle = g; x.fillRect(0, 0, 600, 600);
+  x.fillStyle = '#34363d'; x.fillRect(150, 0, 300, 600); x.fillStyle = '#f6e7b4'; for (let y = 10; y < 600; y += 60) { x.fillRect(248, y, 6, 30); x.fillRect(346, y, 6, 30); }
+  x.textAlign = 'center'; x.font = '44px Bungee, Impact, sans-serif'; x.fillStyle = '#ffc21a'; x.fillText('SILK BOARD', 300, 80); x.fillText('SURVIVOR', 300, 128);
+  x.fillStyle = 'rgba(20,22,28,.85)'; x.fillRect(90, 190, 420, 300);
+  x.fillStyle = '#f6e7b4'; x.font = '110px Bungee, Impact, sans-serif'; x.fillText(r.sc, 300, 320);
+  x.font = '30px Bungee, Impact, sans-serif'; x.fillStyle = '#ffc21a'; x.fillText(r.rank, 300, 380);
+  x.fillStyle = '#f6e7b4'; x.font = '22px system-ui, sans-serif'; x.fillText(`${r.km} km survived  ·  Best ${r.best}`, 300, 430);
+  x.fillText('Beat me on Silk Board Survivor', 300, 560); return c;
+}
+$('share').onclick = () => {
+  const r = S.res, url = location.origin + location.pathname + '?beat=' + r.sc;
+  const text = `I survived ${r.km} km of Bengaluru traffic on Silk Board Survivor and scored ${r.sc}. Beat me 👉 ${url}`;
+  card(r).toBlob(async b => {
+    try {
+      const f = new File([b], 'silk-board-survivor.png', { type: 'image/png' });
+      if (navigator.canShare && navigator.canShare({ files: [f] })) await navigator.share({ files: [f], text });
+      else if (navigator.share) await navigator.share({ text });
+      else throw 0;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+      try { await navigator.clipboard.writeText(text); toast('Copied. Paste it anywhere.'); } catch (_) { toast(text); }
+    }
+  });
+};
+})();
+</script>
+</body>
+</html>

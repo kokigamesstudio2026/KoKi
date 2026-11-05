@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Stack Panic</title>
+<meta name="description" content="One tap. Stack the blocks. Don't miss. Beat my score.">
+<meta property="og:title" content="Stack Panic">
+<meta property="og:description" content="One-tap tower stacking. How high can you go?">
+<meta property="og:type" content="website">
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{--ink:#1c2340;--cream:#fff8ea;--pink:#ff5d8f;--pink-d:#c93a68;--glass:rgba(28,35,64,.78)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none;-webkit-user-select:none}
+html,body{margin:0;height:100%;overflow:hidden;overscroll-behavior:none;touch-action:none;background:var(--ink);color:var(--cream);font-family:"Fredoka",system-ui,-apple-system,"Segoe UI",sans-serif;font-weight:500}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+#hud{position:fixed;left:0;right:0;top:calc(env(safe-area-inset-top,0px) + 10px);text-align:center;pointer-events:none}
+#score{font-size:72px;font-weight:700;line-height:1;text-shadow:0 4px 0 rgba(28,35,64,.35)}
+#sub{font-size:15px;opacity:.9;margin-top:2px;min-height:20px}
+#mute{position:fixed;right:12px;top:calc(env(safe-area-inset-top,0px) + 10px);width:42px;height:42px;border-radius:50%;border:0;background:var(--glass);color:var(--cream);font-size:20px;z-index:5}
+.ov{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:calc(env(safe-area-inset-top,0px) + 20px) 24px calc(env(safe-area-inset-bottom,0px) + 20px);background:var(--glass);text-align:center;z-index:4}
+.ov.hide{display:none}
+h1{font-size:clamp(48px,16vw,84px);line-height:.9;margin:0;font-weight:700;color:var(--cream);text-shadow:0 5px 0 var(--pink)}
+h2{font-size:clamp(24px,7vw,34px);margin:0;max-width:18ch;line-height:1.15;font-weight:700}
+p{margin:0;max-width:32ch;line-height:1.4}
+.big{font-family:inherit;font-weight:700;font-size:20px;padding:14px 30px;border:0;border-radius:18px;background:var(--pink);color:#fff;box-shadow:0 6px 0 var(--pink-d);min-width:230px}
+.big:active{transform:translateY(5px);box-shadow:0 1px 0 var(--pink-d)}
+.big.alt{background:var(--cream);color:var(--ink);box-shadow:0 6px 0 #b9ad8f}
+.tog{display:flex;border-radius:14px;overflow:hidden;border:2px solid var(--cream)}
+.tog button{font-family:inherit;font-weight:700;font-size:15px;padding:9px 20px;border:0;background:transparent;color:var(--cream)}
+.tog button.on{background:var(--cream);color:var(--ink)}
+#fscore{font-size:88px;font-weight:700;line-height:1}
+#frank{font-size:22px;font-weight:700;color:#ffd166}
+#toast{position:fixed;left:50%;bottom:calc(env(safe-area-inset-bottom,0px) + 24px);transform:translateX(-50%);background:var(--cream);color:var(--ink);padding:10px 16px;border-radius:12px;font-size:15px;z-index:9;opacity:0;transition:opacity .2s;pointer-events:none;max-width:90vw}
+#toast.show{opacity:1}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><div id="score">0</div><div id="sub"></div></div>
+<button id="mute" aria-label="Mute">🔊</button>
+
+<div id="start" class="ov">
+  <h1>Stack<br>Panic</h1>
+  <p id="beatMsg"></p>
+  <div class="tog"><button id="mEnd" class="on">Endless</button><button id="mDay">Daily</button></div>
+  <p>Tap to drop the block. Overhang gets sliced off. Land it perfectly to keep your width.</p>
+  <button id="go" class="big">Start stacking</button>
+  <p id="bestLine"></p>
+</div>
+
+<div id="over" class="ov hide">
+  <h2 id="failMsg"></h2>
+  <div id="fscore">0</div>
+  <div id="frank"></div>
+  <p id="fdetail"></p>
+  <button id="share" class="big">Share result</button>
+  <button id="again" class="big alt">Try again</button>
+</div>
+<div id="toast"></div>
+
+<script>
+(() => {
+const $ = id => document.getElementById(id);
+const cv = $('c'), ctx = cv.getContext('2d');
+let W, H, DPR, BH;
+function resize() {
+  DPR = Math.min(devicePixelRatio || 1, 2); W = innerWidth; H = innerHeight;
+  cv.width = W * DPR; cv.height = H * DPR; ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  BH = Math.max(22, Math.min(W * .075, 38));
+}
+addEventListener('resize', resize); addEventListener('orientationchange', resize); resize();
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+
+// ---------- storage (guarded) ----------
+const st = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+};
+const today = new Date().toISOString().slice(0, 10);
+const seedOf = s => [...s].reduce((h, c) => Math.imul(h ^ c.charCodeAt(0), 16777619), 2166136261);
+function mulberry(a) { return () => { a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const beat = +new URLSearchParams(location.search).get('beat') || 0;
+let mode = 'endless', rnd = Math.random;
+
+// ---------- audio (Web Audio only) ----------
+let ac, muted = st.get('sp_mute', false);
+function tone(f, d, type = 'triangle', v = .12, slide = 0) {
+  if (muted) return;
+  try {
+    ac = ac || new (window.AudioContext || window.webkitAudioContext)();
+    const o = ac.createOscillator(), g = ac.createGain(), t = ac.currentTime;
+    o.type = type; o.frequency.setValueAtTime(f, t);
+    if (slide) o.frequency.exponentialRampToValueAtTime(Math.max(30, f + slide), t + d);
+    g.gain.setValueAtTime(v, t); g.gain.exponentialRampToValueAtTime(.001, t + d);
+    o.connect(g); g.connect(ac.destination); o.start(); o.stop(t + d);
+  } catch (e) {}
+}
+const buzz = p => { try { navigator.vibrate && navigator.vibrate(p); } catch (e) {} };
+function setMute() { $('mute').textContent = muted ? '🔇' : '🔊'; }
+$('mute').onclick = e => { e.stopPropagation(); muted = !muted; st.set('sp_mute', muted); setMute(); };
+setMute();
+
+// ---------- data ----------
+const FAILS = ['My grandma stacks better 💀', 'That was a cry for help', 'Gravity wins again', 'Jenga champion you are not',
+  'Bold strategy. Did not work.', 'The tower filed a complaint 📝', 'Load-bearing? Never heard of her', 'Measure twice, tap once'];
+const RANKS = [[0, 'Rookie 🧱'], [15, 'Builder 🔨'], [30, 'Architect 🏗️'], [50, 'Legend 👑']];
+const rankOf = s => RANKS.reduce((r, x) => s >= x[0] ? x[1] : r, RANKS[0][1]);
+
+// ---------- state (x and w are fractions of screen width, so resizing is safe) ----------
+let S, paused = false;
+const BASE = .5, TOL = .014;
+function reset() {
+  rnd = mode === 'daily' ? mulberry(seedOf(today)) : Math.random;
+  S = { state: 'play', t: 0, n: 0, score: 0, combo: 0, perfects: 0, cam: 0, shake: 0, flash: 0, hue: 200,
+    blocks: [{ x: (1 - BASE) / 2, w: BASE }], cur: null, cuts: [], parts: [], pops: [], bodies: [], ct: 0, msg: '' };
+  nextBlock();
+}
+function nextBlock() {
+  const p = S.blocks[S.blocks.length - 1], n = S.blocks.length;
+  const sp = (.55 + Math.min(n, 60) * .012) * (.9 + rnd() * .2), left = rnd() < .5;
+  S.cur = { w: p.w, x: left ? 0 : 1 - p.w, dir: left ? 1 : -1, sp };
+}
+reset(); S.state = 'idle';
+
+const hueOf = i => (S.hue0 + i * 9) % 360;
+const col = (i, l = 62) => `hsl(${(200 + i * 9) % 360},72%,${l}%)`;
+const topY = i => H * .78 - (i + 1) * BH + S.cam; // screen y of block i's top
+
+function drop() {
+  const s = S; if (s.state !== 'play') return;
+  const p = s.blocks[s.blocks.length - 1], c = s.cur, i = s.blocks.length;
+  const lo = Math.max(c.x, p.x), hi = Math.min(c.x + c.w, p.x + p.w), ov = hi - lo;
+  if (ov <= 0) { fail(); return; }
+  let nb;
+  if (Math.abs(c.x - p.x) < TOL) { // perfect drop
+    s.combo++; s.perfects++;
+    const w = Math.min(BASE, p.w + (s.combo >= 3 ? .02 : 0));
+    nb = { x: p.x - (w - p.w) / 2, w };
+    s.score += 1 + Math.min(s.combo, 5); s.shake = .5; s.flash = 1;
+    tone(330 + Math.min(s.combo, 12) * 45, .18, 'triangle', .14); buzz(12);
+    for (let k = 0; k < 16; k++) { const a = Math.random() * 6.28, sp = 90 + Math.random() * 220;
+      s.parts.push({ x: (Math.random() < .5 ? nb.x : nb.x + nb.w) * W, y: topY(i) + BH / 2, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 80, life: .6, c: col(i, 80) }); }
+    s.pops.push({ txt: s.combo > 1 ? `PERFECT x${s.combo}` : 'PERFECT', y: topY(i) - 14, life: 1 });
+  } else {
+    s.combo = 0; s.score += 1; tone(260, .1, 'triangle', .12);
+    nb = { x: lo, w: ov };
+    const cutX = c.x < p.x ? c.x : hi, cutW = c.w - ov; // sliced overhang falls
+    s.cuts.push({ x: cutX * W, y: topY(i), w: cutW * W, vy: 0, vx: (c.x < p.x ? -1 : 1) * 40, i });
+  }
+  s.blocks.push(nb); s.n = s.blocks.length - 1; s.hue = 200 + s.n * 4;
+  nextBlock();
+}
+
+function fail() {
+  const s = S; s.state = 'collapse'; s.ct = 0; s.msg = FAILS[(Math.random() * FAILS.length) | 0];
+  tone(220, .6, 'sawtooth', .16, -170); buzz([60, 40, 140]); s.shake = 1;
+}
+function toBodies() {
+  const s = S;
+  s.blocks.forEach((b, i) => s.bodies.push({ x: b.x * W, y: topY(i), w: b.w * W, vx: (Math.random() - .5) * 260, vy: -Math.random() * 120, rot: 0, vr: (Math.random() - .5) * 3, i }));
+  const c = s.cur; s.bodies.push({ x: c.x * W, y: topY(s.blocks.length), w: c.w * W, vx: (Math.random() - .5) * 120, vy: 0, rot: 0, vr: (Math.random() - .5) * 2, i: s.blocks.length });
+  s.cur = null; tone(120, .7, 'square', .1, -60);
+}
+
+function update(dt) {
+  const s = S;
+  s.cam += (Math.max(0, (s.blocks.length - 5) * BH) - s.cam) * Math.min(1, dt * 5);
+  s.shake = Math.max(0, s.shake - dt * 3); s.flash = Math.max(0, s.flash - dt * 3);
+  s.parts.forEach(p => { p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 600 * dt; p.life -= dt; }); s.parts = s.parts.filter(p => p.life > 0);
+  s.pops.forEach(p => { p.y -= 40 * dt; p.life -= dt; }); s.pops = s.pops.filter(p => p.life > 0);
+  s.cuts.forEach(c => { c.vy += 1800 * dt; c.y += c.vy * dt; c.x += c.vx * dt; }); s.cuts = s.cuts.filter(c => c.y < H + 100);
+  if (s.state === 'idle') { s.t += dt; return; }
+  if (s.state === 'play') {
+    s.t += dt; const c = s.cur;
+    c.x += c.dir * c.sp * dt;
+    if (c.x < 0) { c.x = 0; c.dir = 1; } else if (c.x + c.w > 1) { c.x = 1 - c.w; c.dir = -1; }
+  } else if (s.state === 'collapse') {
+    s.ct += dt;
+    if (s.ct > .55 && !s.bodies.length) toBodies();
+    s.bodies.forEach(b => { b.vy += 1900 * dt; b.y += b.vy * dt; b.x += b.vx * dt; b.rot += b.vr * dt; });
+    if (s.ct > 1.7) gameOver();
+  }
+}
+
+function gameOver() {
+  const s = S; s.state = 'over';
+  const sc = s.score, key = mode === 'daily' ? 'sp_dbest_' + today : 'sp_best';
+  let best = st.get(key, 0); const nb = sc > best; if (nb) { best = sc; st.set(key, best); }
+  let streak = '';
+  if (mode === 'daily') {
+    const sk = st.get('sp_streak', { d: '', n: 0 });
+    if (sk.d !== today) { const y = new Date(Date.now() - 864e5).toISOString().slice(0, 10); sk.n = sk.d === y ? sk.n + 1 : 1; sk.d = today; st.set('sp_streak', sk); }
+    streak = ` Daily streak: ${sk.n} 🔥`;
+  }
+  s.res = { sc, best, rank: rankOf(sc), blocks: s.n };
+  $('failMsg').textContent = s.msg; $('fscore').textContent = sc; $('frank').textContent = s.res.rank;
+  let d = `${s.perfects} perfect drops. ${nb ? 'New best! 🎉' : 'Best: ' + best}.${streak}`;
+  if (beat) d += sc > beat ? ` You beat your friend's ${beat}!` : ` Your friend's ${beat} still stands.`;
+  $('fdetail').textContent = d;
+  $('over').classList.remove('hide'); $('score').textContent = ''; $('sub').textContent = '';
+}
+
+// ---------- drawing ----------
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+function block(x, y, w, i, rot) {
+  ctx.save();
+  if (rot) { ctx.translate(x + w / 2, y + BH / 2); ctx.rotate(rot); ctx.translate(-(x + w / 2), -(y + BH / 2)); }
+  ctx.fillStyle = 'rgba(28,35,64,.22)'; rr(x + 2, y + 5, w, BH - 2, 9); ctx.fill();
+  ctx.fillStyle = col(i, 55); rr(x, y, w, BH - 2, 9); ctx.fill();
+  ctx.fillStyle = col(i, 72); rr(x, y, w, (BH - 2) * .45, 9); ctx.fill();
+  ctx.restore();
+}
+function draw() {
+  const s = S; if (!s) return;
+  const h = s.hue, g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, `hsl(${h % 360},75%,78%)`); g.addColorStop(1, `hsl(${(h + 50) % 360},65%,58%)`);
+  ctx.save(); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  if (s.shake > 0) ctx.translate((Math.random() - .5) * s.shake * 12, (Math.random() - .5) * s.shake * 12);
+  ctx.fillStyle = 'rgba(28,35,64,.35)'; ctx.fillRect(-20, H * .78 + s.cam, W + 40, H);
+  const wob = s.state === 'collapse' && !s.bodies.length ? s.ct : 0;
+  if (!s.bodies.length) s.blocks.forEach((b, i) => {
+    const off = wob ? Math.sin(s.ct * 38 + i) * (i / Math.max(1, s.blocks.length)) * s.ct * W * .05 : 0;
+    block(b.x * W + off, topY(i), b.w * W, i);
+  });
+  if (s.cur && (s.state === 'play' || s.state === 'collapse' || s.state === 'idle')) block(s.cur.x * W, topY(s.blocks.length), s.cur.w * W, s.blocks.length);
+  s.bodies.forEach(b => block(b.x, b.y, b.w, b.i, b.rot));
+  s.cuts.forEach(c => block(c.x, c.y, c.w, c.i));
+  s.parts.forEach(p => { ctx.globalAlpha = Math.max(0, p.life * 1.6); ctx.fillStyle = p.c; ctx.fillRect(p.x - 3, p.y - 3, 6, 6); }); ctx.globalAlpha = 1;
+  ctx.textAlign = 'center'; ctx.font = '700 26px Fredoka, system-ui, sans-serif';
+  s.pops.forEach(p => { ctx.globalAlpha = Math.min(1, p.life * 2); ctx.fillStyle = 'rgba(28,35,64,.5)'; ctx.fillText(p.txt, W / 2 + 2, p.y + 2); ctx.fillStyle = '#fff8ea'; ctx.fillText(p.txt, W / 2, p.y); }); ctx.globalAlpha = 1;
+  if (s.flash > 0) { ctx.fillStyle = `rgba(255,255,255,${s.flash * .22})`; ctx.fillRect(-20, -20, W + 40, H + 40); }
+  ctx.restore();
+  if (paused) { ctx.fillStyle = 'rgba(28,35,64,.65)'; ctx.fillRect(0, 0, W, H); ctx.fillStyle = '#fff8ea'; ctx.textAlign = 'center'; ctx.font = '700 30px Fredoka, system-ui, sans-serif'; ctx.fillText('Paused. Tap to resume', W / 2, H / 2); }
+  if (s.state === 'play') {
+    $('score').textContent = s.score;
+    $('sub').textContent = s.combo > 1 ? `Combo x${s.combo}` : (mode === 'daily' ? 'Daily challenge' : '');
+  }
+}
+
+let last = performance.now();
+function loop(n) {
+  const dt = Math.min(.05, (n - last) / 1000); last = n;
+  if (!paused) update(dt);
+  draw(); requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---------- input ----------
+cv.addEventListener('pointerdown', () => { if (paused) { paused = false; return; } drop(); });
+addEventListener('keydown', e => {
+  if (e.key !== ' ' && e.key !== 'Enter' && e.key !== 'ArrowDown') return;
+  e.preventDefault();
+  if (!$('start').classList.contains('hide')) $('go').click();
+  else if (!$('over').classList.contains('hide')) $('again').click();
+  else if (paused) paused = false; else drop();
+});
+const pause = () => { if (S && S.state === 'play') paused = true; };
+document.addEventListener('visibilitychange', () => document.hidden && pause());
+addEventListener('blur', pause);
+
+// ---------- UI ----------
+function refreshStart() {
+  const best = mode === 'daily' ? st.get('sp_dbest_' + today, 0) : st.get('sp_best', 0), sk = st.get('sp_streak', { n: 0 });
+  $('bestLine').textContent = (best ? 'Best: ' + best : '') + (mode === 'daily' && sk.n ? '  ·  Streak: ' + sk.n + ' 🔥' : '');
+  $('mEnd').classList.toggle('on', mode === 'endless'); $('mDay').classList.toggle('on', mode === 'daily');
+}
+$('mEnd').onclick = () => { mode = 'endless'; refreshStart(); };
+$('mDay').onclick = () => { mode = 'daily'; refreshStart(); };
+if (beat) $('beatMsg').textContent = `Your friend scored ${beat}. Can you beat it?`;
+refreshStart();
+function startRun() { $('start').classList.add('hide'); $('over').classList.add('hide'); reset(); tone(1, .01, 'sine', .001); }
+$('go').onclick = startRun; $('again').onclick = startRun;
+
+function toast(t) { const e = $('toast'); e.textContent = t; e.classList.add('show'); setTimeout(() => e.classList.remove('show'), 2400); }
+function card(r) {
+  const c = document.createElement('canvas'); c.width = c.height = 600; const x = c.getContext('2d');
+  const g = x.createLinearGradient(0, 0, 0, 600); g.addColorStop(0, '#ff9ecb'); g.addColorStop(1, '#5b6dff'); x.fillStyle = g; x.fillRect(0, 0, 600, 600);
+  for (let i = 0; i < 9; i++) { const w = 220 - i * 12, xx = 300 - w / 2 + (i % 2 ? 8 : -8); x.fillStyle = `hsl(${(200 + i * 22) % 360},72%,${58 + (i % 2) * 4}%)`; x.beginPath(); x.roundRect ? x.roundRect(xx, 540 - i * 30, w, 28, 8) : x.rect(xx, 540 - i * 30, w, 28); x.fill(); }
+  x.textAlign = 'center'; x.fillStyle = '#fff8ea'; x.font = '700 54px Fredoka, system-ui, sans-serif'; x.fillText('Stack Panic', 300, 80);
+  x.font = '700 150px Fredoka, system-ui, sans-serif'; x.fillText(r.sc, 300, 240);
+  x.font = '700 38px Fredoka, system-ui, sans-serif'; x.fillStyle = '#ffd166'; x.fillText(r.rank, 300, 295);
+  x.fillStyle = '#fff8ea'; x.font = '500 24px Fredoka, system-ui, sans-serif'; x.fillText(`Best ${r.best}  ·  Beat me!`, 300, 335); return c;
+}
+$('share').onclick = () => {
+  const r = S.res, url = location.origin + location.pathname + '?beat=' + r.sc;
+  const text = `I scored ${r.sc} on Stack Panic. Beat me 👉 ${url}`;
+  card(r).toBlob(async b => {
+    try {
+      const f = new File([b], 'stack-panic.png', { type: 'image/png' });
+      if (navigator.canShare && navigator.canShare({ files: [f] })) await navigator.share({ files: [f], text });
+      else if (navigator.share) await navigator.share({ text });
+      else throw 0;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+      try { await navigator.clipboard.writeText(text); toast('Copied. Paste it anywhere.'); } catch (_) { toast(text); }
+    }
+  });
+};
+})();
+</script>
+</body>
+</html>
